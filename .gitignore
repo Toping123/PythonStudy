@@ -51,6 +51,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Streamlit AI chatroom local history
+第3章/ai_chatroom_history.json
+
 # Translations
 *.mo
 *.pot

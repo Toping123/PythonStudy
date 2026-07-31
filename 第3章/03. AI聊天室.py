@@ -1,5 +1,7 @@
 from datetime import datetime
+import json
 import os
+from pathlib import Path
 from typing import MutableMapping
 
 
@@ -7,6 +9,7 @@ DEFAULT_NICKNAME = "Toping"
 DEFAULT_PERSONALITY = "活泼开朗的小伙"
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_STORAGE_PATH = Path(__file__).with_name("ai_chatroom_history.json")
 
 
 try:
@@ -20,11 +23,60 @@ def create_conversation_title() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
+def normalize_conversation(
+    conversation_id: str,
+    conversation: MutableMapping,
+) -> MutableMapping:
+    """补齐会话字段。"""
+    conversation.setdefault("title", conversation_id)
+    conversation.setdefault("messages", [])
+    conversation.setdefault("nickname", DEFAULT_NICKNAME)
+    conversation.setdefault("personality", DEFAULT_PERSONALITY)
+    return conversation
+
+
+def get_conversation_persona(
+    state: MutableMapping,
+    conversation_id: str | None = None,
+) -> tuple[str, str]:
+    """读取指定会话的独立昵称与性格。"""
+    conversations = state.setdefault("conversations", {})
+    selected_id = conversation_id or state.get("current_conversation_id")
+    conversation = conversations.get(selected_id, {})
+    return (
+        conversation.get("nickname") or DEFAULT_NICKNAME,
+        conversation.get("personality") or DEFAULT_PERSONALITY,
+    )
+
+
+def set_conversation_persona(
+    state: MutableMapping,
+    conversation_id: str,
+    nickname: str,
+    personality: str,
+) -> None:
+    """更新指定会话的独立昵称与性格。"""
+    conversations = state.setdefault("conversations", {})
+    conversation = conversations[conversation_id]
+    conversation["nickname"] = nickname.strip() or DEFAULT_NICKNAME
+    conversation["personality"] = personality.strip() or DEFAULT_PERSONALITY
+
+
 def new_conversation(state: MutableMapping) -> str:
-    """新建会话并切换到该会话。"""
+    """新建会话并切换到该会话；当前会话为空时不重复创建。"""
+    conversations = state.setdefault("conversations", {})
+    current_id = state.get("current_conversation_id")
+    if current_id in conversations:
+        current_conversation = normalize_conversation(
+            current_id,
+            conversations[current_id],
+        )
+        if not current_conversation["messages"]:
+            return current_id
+
+    nickname, personality = get_conversation_persona(state, current_id)
     conversation_id = create_conversation_title()
     counter = 1
-    conversations = state.setdefault("conversations", {})
 
     while conversation_id in conversations:
         counter += 1
@@ -32,20 +84,88 @@ def new_conversation(state: MutableMapping) -> str:
 
     conversations[conversation_id] = {
         "title": conversation_id,
+        "nickname": nickname,
+        "personality": personality,
         "messages": [],
     }
     state["current_conversation_id"] = conversation_id
     return conversation_id
 
 
-def ensure_session_state(state: MutableMapping) -> None:
+def load_persistent_state(storage_path: str | Path = DEFAULT_STORAGE_PATH) -> dict:
+    """从本地 JSON 文件读取历史会话。文件不存在或损坏时返回空字典。"""
+    path = Path(storage_path)
+    if not path.exists():
+        return {}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+
+    conversations = data.get("conversations")
+    if not isinstance(conversations, dict):
+        return {}
+
+    for conversation_id, conversation in conversations.items():
+        if isinstance(conversation, dict):
+            normalize_conversation(conversation_id, conversation)
+
+    return {
+        "current_conversation_id": data.get("current_conversation_id"),
+        "conversations": conversations,
+    }
+
+
+def save_persistent_state(
+    state: MutableMapping,
+    storage_path: str | Path = DEFAULT_STORAGE_PATH,
+) -> None:
+    """把可序列化的聊天状态保存到本地 JSON 文件。"""
+    path = Path(storage_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    current_id = state.get("current_conversation_id")
+    for conversation_id, conversation in state.get("conversations", {}).items():
+        normalize_conversation(conversation_id, conversation)
+
+    data = {
+        "current_conversation_id": current_id,
+        "conversations": state.get("conversations", {}),
+    }
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    temp_path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+
+
+def ensure_session_state(
+    state: MutableMapping,
+    storage_path: str | Path = DEFAULT_STORAGE_PATH,
+) -> None:
     """初始化 Streamlit 会话状态。"""
-    state.setdefault("nickname", DEFAULT_NICKNAME)
-    state.setdefault("personality", DEFAULT_PERSONALITY)
+    if not state.get("_persistent_state_loaded"):
+        persisted_state = load_persistent_state(storage_path)
+        for key in ("current_conversation_id", "conversations"):
+            if key in persisted_state and key not in state:
+                state[key] = persisted_state[key]
+        state["_persistent_state_loaded"] = True
+
     state.setdefault("conversations", {})
 
     if not state["conversations"]:
         new_conversation(state)
+    else:
+        for conversation_id, conversation in state["conversations"].items():
+            normalize_conversation(
+                conversation_id,
+                conversation,
+            )
 
     current_id = state.get("current_conversation_id")
     if current_id not in state["conversations"]:
@@ -129,6 +249,7 @@ def render_sidebar() -> None:
 
     if st.sidebar.button("🖊️ 新建会话", use_container_width=True):
         new_conversation(st.session_state)
+        save_persistent_state(st.session_state)
         st.rerun()
 
     st.sidebar.markdown("### 会话历史")
@@ -140,27 +261,35 @@ def render_sidebar() -> None:
 
         if cols[0].button(button_label, key=f"switch_{conversation_id}", use_container_width=True):
             st.session_state["current_conversation_id"] = conversation_id
+            save_persistent_state(st.session_state)
             st.rerun()
 
         if cols[1].button("❌", key=f"delete_{conversation_id}", use_container_width=True):
             delete_conversation(st.session_state, conversation_id)
+            save_persistent_state(st.session_state)
             st.rerun()
 
         if is_current:
             st.sidebar.caption("当前会话")
 
     st.sidebar.markdown("### AI助手信息")
-    st.session_state["nickname"] = st.sidebar.text_input(
+    current_id = st.session_state["current_conversation_id"]
+    current_nickname, current_personality = get_conversation_persona(st.session_state, current_id)
+    nickname = st.sidebar.text_input(
         "昵称",
-        value=st.session_state["nickname"],
+        value=current_nickname,
         placeholder="例如：小甜甜",
+        key=f"nickname_{current_id}",
     )
-    st.session_state["personality"] = st.sidebar.text_area(
+    personality = st.sidebar.text_area(
         "性格",
-        value=st.session_state["personality"],
+        value=current_personality,
         placeholder="例如：活泼开朗的东北姑娘",
         height=120,
+        key=f"personality_{current_id}",
     )
+    set_conversation_persona(st.session_state, current_id, nickname, personality)
+    save_persistent_state(st.session_state)
 
 
 def render_messages(current_conversation: dict) -> None:
@@ -221,6 +350,7 @@ def main() -> None:
     user_input = st.chat_input("请输入您要问的问题")
     if user_input:
         current_conversation["messages"].append({"role": "user", "content": user_input})
+        save_persistent_state(st.session_state)
         with st.chat_message("user", avatar="🧑"):
             st.write(user_input)
 
@@ -229,14 +359,15 @@ def main() -> None:
                 try:
                     answer = ask_ai(
                         current_conversation["messages"],
-                        st.session_state["nickname"],
-                        st.session_state["personality"],
+                        current_conversation["nickname"],
+                        current_conversation["personality"],
                     )
                 except Exception as error:
                     answer = f"调用 AI 接口失败：{error}"
                 st.write(answer)
 
         current_conversation["messages"].append({"role": "assistant", "content": answer})
+        save_persistent_state(st.session_state)
 
 
 if __name__ == "__main__":

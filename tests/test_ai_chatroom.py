@@ -19,7 +19,7 @@ def load_chatroom_module():
 
 class TestAiChatroom(unittest.TestCase):
     def make_storage_path(self, temp_dir: str) -> Path:
-        return Path(temp_dir) / "chat_history.json"
+        return Path(temp_dir) / "chat_history"
 
     def test_build_system_prompt_uses_nickname_and_personality(self):
         module = load_chatroom_module()
@@ -117,10 +117,13 @@ class TestAiChatroom(unittest.TestCase):
 
             module.save_persistent_state(state, storage_path)
             loaded = module.load_persistent_state(storage_path)
-            saved_json = json.loads(storage_path.read_text(encoding="utf-8"))
+            current_json = json.loads((storage_path / "current.json").read_text(encoding="utf-8"))
+            conversation_json = json.loads((storage_path / f"{current_id}.json").read_text(encoding="utf-8"))
 
-            self.assertNotIn("nickname", saved_json)
-            self.assertNotIn("personality", saved_json)
+            self.assertEqual({"current_conversation_id": current_id}, current_json)
+            self.assertEqual(current_id, conversation_json["id"])
+            self.assertEqual("Toping", conversation_json["nickname"])
+            self.assertEqual("耐心温柔的编程助手", conversation_json["personality"])
             self.assertEqual(current_id, loaded["current_conversation_id"])
             self.assertEqual(
                 "Toping",
@@ -139,18 +142,19 @@ class TestAiChatroom(unittest.TestCase):
         module = load_chatroom_module()
         with tempfile.TemporaryDirectory() as temp_dir:
             storage_path = self.make_storage_path(temp_dir)
-            storage_path.write_text(
+            storage_path.mkdir()
+            (storage_path / "current.json").write_text(
+                json.dumps({"current_conversation_id": "old-session"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (storage_path / "old-session.json").write_text(
                 json.dumps(
                     {
-                        "current_conversation_id": "old-session",
-                        "conversations": {
-                            "old-session": {
-                                "title": "old-session",
-                                "nickname": "历史助手",
-                                "personality": "记性很好",
-                                "messages": [{"role": "assistant", "content": "我还记得。"}],
-                            }
-                        },
+                        "id": "old-session",
+                        "title": "old-session",
+                        "nickname": "历史助手",
+                        "personality": "记性很好",
+                        "messages": [{"role": "assistant", "content": "我还记得。"}],
                     },
                     ensure_ascii=False,
                 ),
@@ -169,6 +173,38 @@ class TestAiChatroom(unittest.TestCase):
                 [{"role": "assistant", "content": "我还记得。"}],
                 state["conversations"]["old-session"]["messages"],
             )
+
+    def test_delete_persistent_conversation_removes_only_that_file(self):
+        module = load_chatroom_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_path = self.make_storage_path(temp_dir)
+            state = {}
+            module.ensure_session_state(state, storage_path=storage_path)
+            first_id = state["current_conversation_id"]
+            state["conversations"][first_id]["messages"].append({"role": "user", "content": "第一段"})
+            second_id = module.new_conversation(state)
+            state["conversations"][second_id]["messages"].append({"role": "user", "content": "第二段"})
+            module.save_persistent_state(state, storage_path)
+
+            module.delete_conversation(state, second_id)
+            module.save_persistent_state(state, storage_path)
+
+            self.assertTrue((storage_path / f"{first_id}.json").exists())
+            self.assertFalse((storage_path / f"{second_id}.json").exists())
+
+    def test_current_conversation_uses_primary_button_type(self):
+        module = load_chatroom_module()
+
+        current_label = module.build_conversation_button_label("会话A", is_current=True)
+        normal_label = module.build_conversation_button_label("会话B", is_current=False)
+        current_type = module.get_conversation_button_type(is_current=True)
+        normal_type = module.get_conversation_button_type(is_current=False)
+
+        self.assertNotIn("🟧", current_label)
+        self.assertIn("会话A", current_label)
+        self.assertNotIn("🟧", normal_label)
+        self.assertEqual("primary", current_type)
+        self.assertEqual("secondary", normal_type)
 
 
 if __name__ == "__main__":

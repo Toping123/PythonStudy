@@ -9,7 +9,7 @@ DEFAULT_NICKNAME = "Toping"
 DEFAULT_PERSONALITY = "活泼开朗的小伙"
 DEFAULT_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEFAULT_STORAGE_PATH = Path(__file__).with_name("ai_chatroom_history.json")
+DEFAULT_STORAGE_PATH = Path(__file__).with_name("ai_chatroom_history")
 
 
 try:
@@ -28,11 +28,17 @@ def normalize_conversation(
     conversation: MutableMapping,
 ) -> MutableMapping:
     """补齐会话字段。"""
+    conversation.setdefault("id", conversation_id)
     conversation.setdefault("title", conversation_id)
     conversation.setdefault("messages", [])
     conversation.setdefault("nickname", DEFAULT_NICKNAME)
     conversation.setdefault("personality", DEFAULT_PERSONALITY)
     return conversation
+
+
+def get_conversation_button_type(is_current: bool) -> str:
+    """当前会话使用 primary 按钮样式，普通会话使用 secondary。"""
+    return "primary" if is_current else "secondary"
 
 
 def get_conversation_persona(
@@ -93,29 +99,38 @@ def new_conversation(state: MutableMapping) -> str:
 
 
 def load_persistent_state(storage_path: str | Path = DEFAULT_STORAGE_PATH) -> dict:
-    """从本地 JSON 文件读取历史会话。文件不存在或损坏时返回空字典。"""
+    """从本地目录读取历史会话；每个会话对应一个 JSON 文件。"""
     path = Path(storage_path)
-    if not path.exists():
+    if not path.is_dir():
         return {}
 
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        current_data = json.loads((path / "current.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        current_data = {}
 
-    if not isinstance(data, dict):
-        return {}
+    conversations = {}
+    for conversation_path in sorted(path.glob("*.json")):
+        if conversation_path.name == "current.json":
+            continue
+        try:
+            conversation = json.loads(conversation_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(conversation, dict):
+            continue
 
-    conversations = data.get("conversations")
-    if not isinstance(conversations, dict):
-        return {}
+        conversation_id = conversation.get("id") or conversation_path.stem
+        conversations[conversation_id] = normalize_conversation(
+            conversation_id,
+            conversation,
+        )
 
-    for conversation_id, conversation in conversations.items():
-        if isinstance(conversation, dict):
-            normalize_conversation(conversation_id, conversation)
+    if not conversations:
+        return {}
 
     return {
-        "current_conversation_id": data.get("current_conversation_id"),
+        "current_conversation_id": current_data.get("current_conversation_id"),
         "conversations": conversations,
     }
 
@@ -124,24 +139,37 @@ def save_persistent_state(
     state: MutableMapping,
     storage_path: str | Path = DEFAULT_STORAGE_PATH,
 ) -> None:
-    """把可序列化的聊天状态保存到本地 JSON 文件。"""
+    """把聊天状态保存到本地目录：当前会话索引 + 每会话单独 JSON。"""
     path = Path(storage_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True)
 
     current_id = state.get("current_conversation_id")
+    active_filenames = {"current.json"}
     for conversation_id, conversation in state.get("conversations", {}).items():
         normalize_conversation(conversation_id, conversation)
+        conversation_path = path / f"{conversation_id}.json"
+        temp_conversation_path = conversation_path.with_suffix(".json.tmp")
+        temp_conversation_path.write_text(
+            json.dumps(conversation, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temp_conversation_path.replace(conversation_path)
+        active_filenames.add(conversation_path.name)
 
-    data = {
+    current_data = {
         "current_conversation_id": current_id,
-        "conversations": state.get("conversations", {}),
     }
-    temp_path = path.with_suffix(f"{path.suffix}.tmp")
-    temp_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
+    current_path = path / "current.json"
+    temp_current_path = current_path.with_suffix(".json.tmp")
+    temp_current_path.write_text(
+        json.dumps(current_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    temp_path.replace(path)
+    temp_current_path.replace(current_path)
+
+    for json_path in path.glob("*.json"):
+        if json_path.name not in active_filenames:
+            json_path.unlink()
 
 
 def ensure_session_state(
@@ -257,9 +285,15 @@ def render_sidebar() -> None:
     for conversation_id, conversation in conversations:
         cols = st.sidebar.columns([4, 1])
         is_current = conversation_id == st.session_state["current_conversation_id"]
-        button_label = f"📄 {conversation['title']}"
+        button_label = f"📄 {conversation["title"]}"
+        button_type = get_conversation_button_type(is_current)
 
-        if cols[0].button(button_label, key=f"switch_{conversation_id}", use_container_width=True):
+        if cols[0].button(
+            button_label,
+            key=f"switch_{conversation_id}",
+            use_container_width=True,
+            type=button_type,
+        ):
             st.session_state["current_conversation_id"] = conversation_id
             save_persistent_state(st.session_state)
             st.rerun()
@@ -268,10 +302,6 @@ def render_sidebar() -> None:
             delete_conversation(st.session_state, conversation_id)
             save_persistent_state(st.session_state)
             st.rerun()
-
-        if is_current:
-            st.sidebar.caption("当前会话")
-
     st.sidebar.markdown("### AI助手信息")
     current_id = st.session_state["current_conversation_id"]
     current_nickname, current_personality = get_conversation_persona(st.session_state, current_id)

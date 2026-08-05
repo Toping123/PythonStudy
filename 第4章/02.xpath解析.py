@@ -43,10 +43,10 @@ def xpath_parse() -> list:
         for td in row.xpath("td"):
             row_list.append(td.text)
         column_list.append(row_list)
-    for item in column_list:
-        print(item)
     return column_list
 
 
 if __name__ == "__main__":
-    xpath_parse()
+   colum_list =  xpath_parse()
+   for item in colum_list:
+       print(item)

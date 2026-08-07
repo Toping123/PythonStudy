@@ -5,7 +5,6 @@ class Movie:
     def __init__(self,
                  url,
                  name="",
-                 year="",
                  date="",
                  tags=None,
                  time="",
@@ -19,7 +18,6 @@ class Movie:
         电影实体
         :param url:  链接
         :param name: 名称
-        :param year: 年份
         :param date: 上映时间
         :param tags:  类型
         :param time: 时长
@@ -34,7 +32,6 @@ class Movie:
             tags = []
         self.url = url
         self.name = name
-        self.year = year
         self.date = date
         self.tags = tags
         self.time = time
@@ -46,4 +43,4 @@ class Movie:
         self.desc = desc
 
     def __str__(self):
-        return f"电影名：{self.name}, 链接：{self.url}, {self.year},上映时间：{self.date},类型：{self.tags},时长：{self.time},评分：{self.score},语言：{self.language},作者：{self.author},slogan:{self.slogan},简介：{self.desc}"
+        return f"电影名：{self.name}, 链接：{self.url}, 上映时间：{self.date},类型：{self.tags},时长：{self.time},评分：{self.score},语言：{self.language},作者：{self.author},slogan:{self.slogan},简介：{self.desc}"

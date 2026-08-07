@@ -1,4 +1,5 @@
 import csv
+import re
 
 import requests
 from lxml import etree
@@ -42,19 +43,19 @@ def get_movie_info(movie_url) -> Movie:
     tree = etree.HTML(res.text)
     movie.name = handle_strip_list(tree.xpath("//*[@id='original_header']/div[2]//h2/a/text()"))
     print(movie.name)
-    movie.year = handle_strip_list(tree.xpath("//*[@id='original_header']/div[2]//h2/span/text()"))
-    print(movie.year)
-    movie.date = handle_strip_list(tree.xpath("//*[@id='original_header']//span[@class='release']/text()"))
+    date = handle_strip_list(tree.xpath("//*[@id='original_header']//span[@class='release']/text()"))
+    movie.date = date[:len(date) - 4].strip() if len(date) > 4 else date
     print(movie.date)
     movie.tags = handle_strip_list(tree.xpath("//*[@id='original_header']//span[@class='genres']/a/text()"))
     print(movie.tags)
-    movie.time = handle_strip_list(tree.xpath("//*[@id='original_header']//span[@class='runtime']/text()"))
+    time = handle_strip_list(tree.xpath("//*[@id='original_header']//span[@class='runtime']/text()"))
+    movie.time = switch_time_to_minutes(time)
     print(movie.time)
     movie.score = handle_strip_list(
         tree.xpath("//*[@id='original_header']//div[@class='user_score_chart']/@data-percent"))
     print(movie.score)
     movie.language = handle_strip_list(
-        tree.xpath("//*[@id='media_v4']/div/div/div[2]/div/section/div[1]/div/section[1]/p[3]/text()"))
+        tree.xpath("//*[@id='media_v4']//bdi[normalize-space()='默认语言']/ancestor::p[1]/text()"))
     print(movie.language)
     # 所有的身份列表
     identity_list = tree.xpath("//*[@id='original_header']/div[2]/section/div[3]//li[@class='profile']")
@@ -111,6 +112,18 @@ def handle_strip_list(parse_list) -> str:
     else:
         return ""
 
+
+def switch_time_to_minutes(time)->int:
+    """
+    将xx h xx m转换为分
+    :param time:
+    :return:
+    """
+    h = re.search(r"(\d+)h", time)
+    m = re.search(r"(\d+)m", time)
+    h = int(h.group(1)) if h else 0
+    m = int(m.group(1)) if m else 0
+    return h * 60 + m
 
 def save_csv(movie_list):
     """

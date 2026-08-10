@@ -1,6 +1,3 @@
-from streamlit.elements import empty
-
-
 class Movie:
     def __init__(self,
                  url,

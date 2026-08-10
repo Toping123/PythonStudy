@@ -1,0 +1,53 @@
+[
+  {
+    "book_id": 1,
+    "name": "Python从入门到精通",
+    "price": 74.22,
+    "total_num": 3
+  },
+  {
+    "book_id": 2,
+    "name": "Java编程思想",
+    "total_num": 7
+  },
+  {
+    "book_id": 3,
+    "name": "C++ Primer",
+    "total_num": 2
+  },
+  {
+    "book_id": 4,
+    "name": "算法导论",
+    "total_num": 9
+  },
+  {
+    "book_id": 5,
+    "name": "深入理解计算机系统",
+    "total_num": 5
+  },
+  {
+    "book_id": 6,
+    "name": "数据库系统概论",
+    "total_num": 1
+  },
+  {
+    "book_id": 7,
+    "name": "网络是怎样连接的",
+    "total_num": 8
+  },
+  {
+    "book_id": 8,
+    "name": "操作系统原理",
+    "total_num": 4
+  },
+  {
+    "book_id": 9,
+    "name": "数据结构与算法分析",
+    "total_num": 6
+  },
+  {
+    "book_id": 10,
+    "name": "设计模式",
+    "total_num": 2
+  }
+]

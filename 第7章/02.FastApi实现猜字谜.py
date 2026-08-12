@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
+
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_STORAGE_PATH = BASE_DIR / "riddle_chat_history"
 STATIC_DIR = BASE_DIR / "static"
@@ -33,16 +34,19 @@ logger = logging.getLogger(__name__)
 
 class GuessRequest(BaseModel):
     """用户提交猜字谜答案的请求体。"""
+
     content: str
 
 
 def api_success(data: Any = None, message: str = "success") -> dict[str, Any]:
     """构造统一的成功响应结构。"""
+
     return {"code": 0, "message": message, "data": data}
 
 
 def api_error(code: int, message: str, data: Any = None) -> dict[str, Any]:
     """构造统一的错误响应结构。"""
+
     return {"code": code, "message": message, "data": data}
 
 
@@ -51,15 +55,18 @@ class RiddleAgent(Protocol):
 
     def start_chat(self) -> str:
         """开始一局新游戏，并返回第一条助手消息。"""
+
         ...
 
     def answer(self, chat: dict[str, Any], user_text: str) -> str:
         """根据聊天历史和用户输入生成判题回复。"""
+
         ...
 
 
 class DeepSeekRiddleAgent:
     """使用 DeepSeek 兼容 OpenAI SDK 的聊天接口驱动猜字谜游戏。"""
+
     def __init__(self) -> None:
         """从环境变量读取 DeepSeek API 配置。"""
 
@@ -81,6 +88,7 @@ class DeepSeekRiddleAgent:
 
     def start_chat(self) -> str:
         """请求 DeepSeek 生成第一道汉字字谜。"""
+
         logger.info("Requesting first riddle from DeepSeek")
         return self._chat(
             [
@@ -93,6 +101,7 @@ class DeepSeekRiddleAgent:
 
     def answer(self, chat: dict[str, Any], user_text: str) -> str:
         """把当前会话上下文和用户答案发送给 DeepSeek 判题。"""
+
         history = [
             {"role": message["role"], "content": message["content"]}
             for message in chat.get("messages", [])
@@ -109,6 +118,7 @@ class DeepSeekRiddleAgent:
 
     def _chat(self, messages: list[dict[str, str]]) -> str:
         """调用 DeepSeek 聊天接口并返回助手文本。"""
+
         if not self.api_key:
             logger.warning("DeepSeek API key is missing")
             return "还没有配置 DEEPSEEK_API_KEY，先在环境变量中设置后我就可以请 DeepSeek 出题了。"
@@ -128,7 +138,7 @@ class DeepSeekRiddleAgent:
                 *messages,
             ],
             stream=False,
-            temperature=1.5
+            temperature=1.5,
         )
         logger.info("DeepSeek chat completion returned")
         return response.choices[0].message.content or "DeepSeek 暂时没有返回内容，请再试一次。"
@@ -136,6 +146,7 @@ class DeepSeekRiddleAgent:
 
 def create_chat_id(storage_path: Path) -> str:
     """按当前创建时间生成聊天文件名，必要时追加序号避免重名。"""
+
     chat_id = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     counter = 1
     while (storage_path / f"{chat_id}.json").exists():
@@ -145,17 +156,9 @@ def create_chat_id(storage_path: Path) -> str:
     return chat_id
 
 
-def normalize_chat(chat_id: str, chat: dict[str, Any]) -> dict[str, Any]:
-    """补齐聊天对象的基础字段，兼容旧 JSON 文件。"""
-    chat.setdefault("id", chat_id)
-    chat.setdefault("title", chat_id)
-    chat.setdefault("created_at", chat_id)
-    chat.setdefault("messages", [])
-    return chat
-
-
 def make_chat_summary(chat: dict[str, Any]) -> dict[str, Any]:
     """把完整聊天对象转换成列表展示所需的摘要数据。"""
+
     return {
         "id": chat["id"],
         "title": chat["title"],
@@ -166,6 +169,7 @@ def make_chat_summary(chat: dict[str, Any]) -> dict[str, Any]:
 
 def load_chats(storage_path: Path) -> dict[str, dict[str, Any]]:
     """从本地目录加载所有聊天 JSON 文件。"""
+
     if not storage_path.is_dir():
         logger.info("Chat storage directory does not exist: storage_path=%s", storage_path)
         return {}
@@ -177,9 +181,10 @@ def load_chats(storage_path: Path) -> dict[str, dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             logger.exception("Failed to load chat file: path=%s", chat_path)
             continue
-        if isinstance(chat, dict):
-            chat_id = chat.get("id") or chat_path.stem
-            chats[chat_id] = normalize_chat(chat_id, chat)
+        if not isinstance(chat, dict) or "id" not in chat:
+            logger.warning("Skip invalid chat file: path=%s", chat_path)
+            continue
+        chats[chat["id"]] = chat
 
     logger.info("Loaded chats: storage_path=%s count=%s", storage_path, len(chats))
     return chats
@@ -187,6 +192,7 @@ def load_chats(storage_path: Path) -> dict[str, dict[str, Any]]:
 
 def save_chat(storage_path: Path, chat: dict[str, Any]) -> None:
     """把单个聊天对象保存为独立 JSON 文件。"""
+
     storage_path.mkdir(parents=True, exist_ok=True)
     chat_path = storage_path / f"{chat['id']}.json"
     temp_path = chat_path.with_suffix(".json.tmp")
@@ -202,6 +208,7 @@ def save_chat(storage_path: Path, chat: dict[str, Any]) -> None:
 
 def create_chat(storage_path: Path, riddle_agent: RiddleAgent) -> dict[str, Any]:
     """创建新聊天并让 DeepSeek 生成第一道字谜。"""
+
     storage_path.mkdir(parents=True, exist_ok=True)
     chat_id = create_chat_id(storage_path)
     logger.info("Creating chat: chat_id=%s", chat_id)
@@ -217,21 +224,30 @@ def create_chat(storage_path: Path, riddle_agent: RiddleAgent) -> dict[str, Any]
 
 def get_chat_or_404(storage_path: Path, chat_id: str) -> dict[str, Any]:
     """读取指定聊天；不存在时抛出 404 异常。"""
+
     chat_path = storage_path / f"{chat_id}.json"
     if not chat_path.exists():
         logger.warning("Chat not found: chat_id=%s path=%s", chat_id, chat_path)
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="聊天不存在")
-    chat = json.loads(chat_path.read_text(encoding="utf-8"))
+    try:
+        chat = json.loads(chat_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        logger.exception("Chat file format is invalid: chat_id=%s path=%s", chat_id, chat_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="聊天文件格式错误",
+        ) from error
     logger.info("Loaded chat: chat_id=%s message_count=%s", chat_id, len(chat.get("messages", [])))
-    return normalize_chat(chat_id, chat)
+    return chat
 
 
 def build_chat_list_response(
-        storage_path: Path,
-        riddle_agent: RiddleAgent,
-        current_chat_id: str | None = None,
+    storage_path: Path,
+    riddle_agent: RiddleAgent,
+    current_chat_id: str | None = None,
 ) -> dict[str, Any]:
     """构造聊天列表响应数据，空目录时自动创建第一局游戏。"""
+
     chats = load_chats(storage_path)
     if not chats:
         logger.info("No chat history found; creating initial chat")
@@ -247,10 +263,11 @@ def build_chat_list_response(
 
 
 def create_app(
-        storage_path: str | Path = DEFAULT_STORAGE_PATH,
-        riddle_agent: RiddleAgent | None = None,
+    storage_path: str | Path = DEFAULT_STORAGE_PATH,
+    riddle_agent: RiddleAgent | None = None,
 ) -> FastAPI:
     """创建并配置 FastAPI 应用实例。"""
+
     storage = Path(storage_path)
     agent = riddle_agent or DeepSeekRiddleAgent()
     my_app = FastAPI(title="汉字谜盒")
@@ -260,9 +277,10 @@ def create_app(
         logger.info("Mounting static directory: path=%s", STATIC_DIR)
         my_app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @my_app.exception_handler(Exception)
+    @my_app.exception_handler(HTTPException)
     def handle_http_exception(request: Request, exception: HTTPException):
         """把 HTTPException 转换成统一接口响应。"""
+
         logger.warning(
             "HTTP exception: method=%s path=%s status=%s detail=%s",
             request.method,
@@ -278,6 +296,7 @@ def create_app(
     @my_app.exception_handler(Exception)
     def handle_exception(request: Request, exception: Exception):
         """把未处理异常转换成统一接口响应。"""
+
         logger.exception("Unhandled exception: method=%s path=%s", request.method, request.url.path)
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -290,6 +309,7 @@ def create_app(
     @my_app.get("/")
     def index():
         """返回猜字谜网页入口。"""
+
         index_path = STATIC_DIR / "index.html"
         if not index_path.exists():
             logger.warning("Static index file is missing: path=%s", index_path)
@@ -300,24 +320,28 @@ def create_app(
     @my_app.get("/api/chats")
     def list_api_chats():
         """查询聊天列表。"""
+
         logger.info("API list chats")
         return api_success(build_chat_list_response(storage, agent))
 
     @my_app.post("/api/chats", status_code=status.HTTP_201_CREATED)
     def create_api_chat():
         """创建新聊天。"""
+
         logger.info("API create chat")
         return api_success(create_chat(storage, agent))
 
     @my_app.get("/api/chats/{chat_id}")
     def get_api_chat(chat_id: str):
         """查询单个聊天详情。"""
+
         logger.info("API get chat: chat_id=%s", chat_id)
         return api_success(get_chat_or_404(storage, chat_id))
 
     @my_app.delete("/api/chats/{chat_id}")
     def delete_api_chat(chat_id: str):
         """删除指定聊天并返回更新后的聊天列表。"""
+
         chat_path = storage / f"{chat_id}.json"
         if not chat_path.exists():
             logger.warning("API delete chat failed; chat not found: chat_id=%s", chat_id)
@@ -329,6 +353,7 @@ def create_app(
     @my_app.post("/api/chats/{chat_id}/guess")
     def guess_api_chat(chat_id: str, request: GuessRequest):
         """提交答案并返回 DeepSeek 的判题结果。"""
+
         chat = get_chat_or_404(storage, chat_id)
         user_text = request.content.strip()
         logger.info("API guess chat: chat_id=%s user_text_length=%s", chat_id, len(user_text))
@@ -343,5 +368,6 @@ def create_app(
 
 app = create_app()
 
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8008")))
+    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("PORT", "8000")))

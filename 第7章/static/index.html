@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>汉字谜盒</title>
+  <link rel="stylesheet" href="/static/style.css?v=20260812-2">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">🪄</span>
+      <h1>汉字谜盒控制台</h1>
+    </div>
+    <button id="new-chat" class="primary-button" type="button">
+      <span>✏️</span>
+      <span>新建游戏</span>
+    </button>
+    <div class="history-title">游戏记录</div>
+    <div id="chat-list" class="chat-list"></div>
+  </aside>
+
+  <main class="main">
+    <header class="chat-header">
+      <div>
+        <h2>🪄 汉字谜盒</h2>
+        <p>会话名称: <span id="chat-title">-</span></p>
+      </div>
+      <div class="theme-chip">🎨</div>
+    </header>
+
+    <section id="messages" class="messages" aria-live="polite"></section>
+
+    <form id="guess-form" class="composer">
+      <input id="guess-input" type="text" autocomplete="off" placeholder="输入你的答案，或者问我要新题目～">
+      <button class="send-button" type="submit" aria-label="发送">➤</button>
+    </form>
+  </main>
+
+  <script src="/static/app.js?v=20260812-2"></script>
+</body>
+</html>

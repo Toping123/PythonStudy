@@ -21,7 +21,4 @@ response = client.chat.completions.create(
     extra_body={"thinking": {"type": "enabled"}}
 )
 
-# print(response)
-
-if __name__ == '__main__':
-    print(response.choices[0].message.content)
+print(response.choices[0].message.content)

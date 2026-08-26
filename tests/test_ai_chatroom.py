@@ -6,7 +6,7 @@ import unittest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CHATROOM_PATH = PROJECT_ROOT / "第3章" / "03. AI聊天室.py"
+CHATROOM_PATH = PROJECT_ROOT / "第3章" / "04.AI聊天室.py"
 
 
 def load_chatroom_module():

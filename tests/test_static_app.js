@@ -4,7 +4,7 @@ const path = require("path");
 const vm = require("vm");
 
 const projectRoot = path.resolve(__dirname, "..");
-const appPath = path.join(projectRoot, "第7章", "static", "app.js");
+const appPath = path.join(projectRoot, "第7章-FastApi", "static", "app.js");
 const appCode = fs.readFileSync(appPath, "utf8");
 
 function createElement(tagName) {

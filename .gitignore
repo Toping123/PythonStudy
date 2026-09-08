@@ -52,8 +52,8 @@ coverage.xml
 cover/
 
 # Streamlit AI chatroom local history
-第3章/ai_chatroom_history.json
-第3章/ai_chatroom_history/
+第3章-Ai调用/ai_chatroom_history.json
+第3章-Ai调用/ai_chatroom_history/
 
 # Translations
 *.mo

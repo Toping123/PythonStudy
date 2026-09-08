@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RIDDLE_APP_PATH = PROJECT_ROOT / "第7章" / "02.FastApi实现猜字谜.py"
+RIDDLE_APP_PATH = PROJECT_ROOT / "第7章-FastApi" / "02.FastApi实现猜字谜.py"
 
 
 def load_riddle_module():

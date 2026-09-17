@@ -1,0 +1,5 @@
+[
+    {"name": "张三", "age": 18, "gender": "男"},
+    {"name": "赵四", "age": 19, "gender": "男"},
+    {"name": "刘五", "age": 21, "gender": "男"}
+]

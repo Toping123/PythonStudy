@@ -1,0 +1,424 @@
+# D9 语音交互与任务编排需求分析 v0
+
+- **Skill 版本**：requirement-to-design v1.6.0
+- **需求来源**：产品截图（2026-09-15）
+- **状态**：v0，待产品/算法/嵌入式确认
+
+## 1. 需求理解与范围
+
+### 1.1 目标
+
+机器人空闲时常驻等待唤醒。机体麦阵沿用系统 Speech SDK 录音；外接 USB/无线麦需要应用提供 PCM。唤醒词“嗨，PUDU”命中后进入语音交互、播放“我在”、灯效从待机切换到交互灯。非指令语音仅回答；指令语音创建并执行导航、播放、动作或组合任务。
+
+每次唤醒后开启一段最长 15 秒的完整语音会话。每轮 TTS 完成后持续监听最多 5 秒；ASR 失败累计至第 3 次时退出会话。非失败的问答不消耗失败次数。任一限制先达到即自动退出，继续交互必须再次唤醒。任务完成、失败或暂停后复位；若有被中断任务，机器人仅通过语音询问是否恢复，确认后恢复，否则清除。任务队列按顺序调度下一任务。
+
+### 1.2 功能分解
+
+| ID | 功能 | 本期理解 | 优先级 |
+|---|---|---|---|
+| F1 | 音频与唤醒 | 空闲常驻录音；按机型选择系统录音或外部 PCM；唤醒后进入会话 | P0 |
+| F2 | 对话策略 | 问答与命令分流；交互次数/间隔/超时约束；TTS 与灯效同步 | P0 |
+| F3 | 命令到任务 | 导航、介绍播放、舞蹈动作、组合任务；任务中收到新命令先暂停当前任务 | P0 |
+| F4 | 任务执行 | 导航抵达后播放欢迎/介绍；介绍可带手势；结束任务执行坐下并切换待机灯 | P0 |
+| F5 | 中断恢复 | 任务结束后识别缓存任务，询问恢复；确认恢复、拒绝清除 | P1 |
+
+### 1.3 已列举业务命令
+
+- 问答：非指令语音走语音回答。
+- 导航：到迎宾位、历史区、获奖区、具身区、工业区、配送区、清洁区、停靠点。
+- 内容介绍：历史、获奖、具身智能、工业、配送、清洁产品；部分要求伴随手势。
+- 动作：跳舞。
+- 结束："你的工作结束了，可以回去了" → 导航停靠点 → 坐下 → 待机/阻尼模式与待机灯。
+
+## 2. PISTF
+
+| PRD 条目 | P | I | S | T | F |
+|---|---|---|---|---|---|
+| F1-F2 语音接入 | D9 展示机器人 | 展会/展厅 | 客户咨询、无屏或弱屏操作 | 唤醒与多轮交流 | 复用 interaction，会话策略配置化 |
+| F3-F5 任务编排 | D9 | 展会/展厅 | 讲解、带路、演示被打断 | 创建、暂停、恢复任务 | interaction INTERNAL_APOS + D9 APOS 能力组件 |
+
+- **适配类型**：场景包，建议沉淀为“外部音频源 + APOS 命令映射与 D9 能力组件”能力。
+- **PISTF 结论**：语音会话可复用平台能力；地点、内容、动作、灯效和停靠流程为 D9 展示场景配置，禁止硬编码到通用 interaction。
+
+## 3. 能力归属与契约
+
+| 能力 | 主责 | 最小输入/输出 |
+|---|---|---|
+| 唤醒/ASR/NLP/TTS/多语言 | interaction + Speech SDK | PCM16 16k 单声道或系统录音；事件流与 NLP JSON |
+| 外接麦采集与格式转换 | D9 客户端/音频适配 | PCM 回调；设备状态、采样率、声道、错误 |
+| 命令解析 | interaction + D9 业务层 | NLP intent/参数 → APOS 命令；D9 APOS 能力组件执行并回传状态 |
+| 导航、播放、动作、坐下 | D9 SDK/OS | Task 执行命令、进度、成功/失败/暂停回调 |
+| 灯效与阻尼 | D9 SDK/嵌入式 | 待机/交互/执行状态 → 灯效与姿态命令 |
+
+## 4. 推荐方案
+
+### 4.1 技术选型
+
+检索摘要（2026-09-15）：Android 官方 `AudioRecord` 需 `RECORD_AUDIO` 且应用必须及时读取缓冲，设备参数应在运行时确认；Android 对麦克风并发采集与后台访问有约束。因此 D9 外接麦应使用单一音频所有者、前台生命周期和设备路由/断连监控。[AudioRecord 官方文档](https://developer.android.com/reference/android/media/AudioRecord)
+
+| 技术点 | 主选 | 理由 | 不选/备选 |
+|---|---|---|---|
+| 语音会话 | interaction 复用 | 已有多语言、TTS、会话与事件流 | Demo Activity 只适于调试 |
+| 音频输入 | `AudioInputProvider` 抽象 | 允许系统录音与 USB/无线麦 PCM 两种实现 | 将采集代码放进 UI 会造成强耦合 |
+| 指令分发 | interaction `INTERNAL_APOS` + D9 APOS 能力组件 | 语音、UI、远程等入口复用统一命令总线、条件与状态回传 | 本期固定采用 APOS |
+| 状态 | 独立 `D9TaskOrchestrator` | 语音会话与任务生命周期分离，可暂停/恢复 | 在 Activity 回调中堆分支 |
+| UI | 原生 Android + interaction 状态事件 | 适配现有 Android/机器人 SDK、弱网与硬件控制 | RN/Flutter/H5 不适合承载低层音频和硬件时序 |
+
+### 4.2 架构与主时序
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Audio as D9音频源
+    participant Voice as interaction
+    participant APOS as APOS命令总线
+    participant Task as D9任务编排
+    participant Robot as D9机器人能力
+    User->>Audio: 说唤醒词或指令
+    Audio->>Voice: 系统录音或PCM16k单声道
+    Voice-->>User: 唤醒应答和交互灯效事件
+    alt 问答
+        Voice-->>User: 多语言回答
+    else 任务命令
+        Voice->>APOS: NLP意图映射为命令及参数
+        APOS->>Task: 分发D9能力命令与状态
+        Task->>Robot: 暂停旧任务、创建/恢复组合任务
+        Robot-->>Task: 进度和终态
+        Task-->>APOS: cmdId关联的状态回传
+        Task-->>User: 导航、介绍、动作或结束反馈
+    end
+```
+
+`D9TaskOrchestrator` 维护 `Idle / Executing / Paused / Recovering / Resetting / Finished / Failed`。新语音命令到达 Executing 状态时先持久化可恢复快照、暂停旧任务，再创建新任务；终态统一进入 `Resetting` 和恢复判定，不能由单个导航或播放回调直接开始下一任务。语音意图由 interaction 映射为 APOS 命令，D9 注册 APOS 能力组件执行并回传状态。APOS 原生没有“暂停”状态，因此“暂停/恢复”由编排层通过快照、取消旧命令和重建剩余链路实现，不能假定命令总线自动具备该语义。
+
+## 5. 验收标准
+
+| ID | 关联 | 验收要点 |
+|---|---|---|
+| AC-001 | F1-F2 | 空闲唤醒后进入交互、应答和灯效变化；轮数/超时按配置退出 |
+| AC-002 | F3-F4 | 导航介绍、动作和结束命令被创建为正确任务并观察到终态 |
+| AC-003 | F3-F5 | 执行中收到新命令暂停旧任务；终态后可恢复或清除 |
+
+```gherkin
+# language: zh-CN
+Feature: D9 空闲语音交互
+  @AC-001 @P0 @F1
+  Scenario Outline: 唤醒后的会话在约束内交互
+    Given 机器人空闲且音频输入可用
+    When 用户说出唤醒词且发生<会话事件>
+    Then 机器人进入语音交互并播放唤醒应答
+    And 灯效切换为语音交互状态
+    And 会话在<结果>后回到待机
+    Examples:
+      | 会话事件 | 结果 |
+      | 完成一轮正常问答 | 保持在本次会话，正常问答不消耗失败次数 |
+      | 第三次ASR失败 | 第三次ASR失败后退出 |
+      | 会话总时长达到15秒 | 单次会话达到15秒后退出 |
+```
+```mermaid
+graph TD
+    A[机器人空闲且音频可用] --> B[用户说唤醒词]
+    B --> C[进入语音交互并播放应答]
+    C --> D{轮次和时长是否允许}
+    D -->|允许| E[继续本轮交互]
+    D -->|达到限制| F[退出交互并恢复待机]
+```
+
+```gherkin
+# language: zh-CN
+Feature: D9 语音任务执行
+  @AC-002 @P0 @F3 @F4
+  Scenario: 用户要求前往历史区并介绍历史
+    Given 机器人空闲且已进入语音交互
+    When 用户发出前往历史区或介绍历史的语音指令
+    Then 系统创建对应导航或播放任务
+    And 导航任务抵达后播放指定介绍内容
+    And 任务终态被记录为完成、失败或暂停
+```
+```mermaid
+graph TD
+    A[语音交互中] --> B[收到导航或介绍命令]
+    B --> C[创建D9任务]
+    C --> D{任务类型}
+    D -->|导航介绍| E[导航抵达后播放介绍]
+    D -->|播放介绍| F[直接播放介绍]
+    E --> G[记录任务终态]
+    F --> G
+```
+
+```gherkin
+# language: zh-CN
+Feature: D9 被中断任务恢复
+  @AC-003 @P0 @F5
+  Scenario Outline: 任务终态后处理被中断任务
+    Given 存在已暂停的可恢复任务
+    When 当前任务结束并询问用户是否恢复
+    Then 用户选择<选择>后系统<结果>
+    Examples:
+      | 选择 | 结果 |
+      | 恢复 | 恢复被中断任务 |
+      | 不恢复 | 清除被中断任务 |
+```
+```mermaid
+graph TD
+    A[当前任务结束] --> B{是否存在被中断任务}
+    B -->|否| C[任务链结束]
+    B -->|是| D[询问是否恢复]
+    D --> E{用户选择}
+    E -->|恢复| F[恢复被中断任务]
+    E -->|不恢复| G[清除被中断任务]
+```
+
+## 6. 澄清与开放问题
+
+| ID | 问题与建议假设 | 风险 |
+|---|---|---|
+| C1 | 已确认：每轮 TTS 完成后持续监听最多 5 秒。 | 已确认 |
+| C2 | 已确认：3 次机会指 ASR 失败累计次数，非正常问答轮数。 | 已确认 |
+| C3 | 已确认：15 秒为整次唤醒会话总时长，任一限制先达到即退出。 | 已确认 |
+| C4 | 已确认：执行中的任务收到新的语音指令时一律暂停并保存恢复快照；急停仍以安全终态优先。 | 已确认；命令优先级表待冻结 |
+| C5 | 已确认：恢复上一次任务仅采用语音确认，不需要 UI；恢复快照粒度待冻结。 | 已确认部分 |
+| C6 | 每个地点、讲解音频、手势、欢迎词、灯效、坐下/阻尼接口由谁提供且是否多语言？ | 依赖阻塞 |
+| C7 | D9 实体麦阵与 USB/无线麦的优先级、热插拔、断连和采样格式？ | 无音频或错误识别 |
+| C8 | 非指令问答是否允许云端；弱网/离线如何回复？ | 展会场景不可用 |
+
+## 7. 能力包与影响项
+
+| 包成员 | In/Out/Already | 验收 |
+|---|---|---|
+| interaction 语音会话与多语言 | In，复用并增加外部音频入口 | AC-001 |
+| 外接麦采集与PCM格式化 | In，按D9硬件实现 | AC-001 |
+| APOS 指令执行 | In | interaction 采用 `INTERNAL_APOS`；D9 注册能力、检查器和命令状态回传 |
+| D9 任务命令适配器 | In | AC-002/003 |
+| 内容、地点、动作、灯效配置 | In，配置化 | AC-002 |
+
+## 8. DoR 与人工确认待办
+
+| DoR | 状态 | 风险 |
+|---|---|---|
+| D1 任务命令表和优先级确认 | 待确认 | P0阻塞 |
+| D2 音频设备/PCM契约确认 | 待确认 | P0阻塞 |
+| D3 D9导航、播放、动作、灯效接口可联调 | 待确认 | P0阻塞 |
+| D4 会话次数、5秒、15秒的精确定义 | 已确认 | 已冻结为完整唤醒会话15秒、TTS后监听5秒、累计3次ASR失败退出 |
+| D5 多语言内容与兜底文案来源 | 待确认 | P1阻塞 |
+| D6 APOS 命令契约 | 待确认：命令名、参数、组合优先级、条件和状态回传 | P0阻塞 |
+
+## 人工确认待办
+
+- [x] TASK-001 [人工确认] 冻结语音会话的3次、5秒、15秒计数口径 | 负责人：产品 | 截止：2026-09-15 | 来源：C1-C3 | 阻塞：不阻塞 #待办 | 结论：完整唤醒会话15秒；TTS后监听5秒；累计3次ASR失败退出 | 确认人：需求方 | 完成日期：2026-09-15
+- [ ] TASK-002 [人工确认] 提供D9音频设备、PCM格式、热插拔及录音所有权契约 | 负责人：嵌入式/音频算法 | 截止：待指定 | 来源：C7 | 阻塞：P0 #待办
+- [ ] TASK-003 [人工确认] 提供地点、内容、动作、灯效、坐下和阻尼能力接口与错误码 | 负责人：D9 SDK/嵌入式 | 截止：待指定 | 来源：C4-C6 | 阻塞：P0 #待办
+- [ ] TASK-004 [人工确认] 冻结中断任务的恢复快照字段与恢复粒度 | 负责人：产品+D9研发 | 截止：待指定 | 来源：C4-C5 | 阻塞：P0 #待办 | 已确认：新语音命令一律暂停旧任务；仅语音确认恢复；无UI确认
+- [ ] TASK-005 [人工确认] 确认多语言语料、介绍内容和离线降级策略 | 负责人：产品/后端 | 截止：待指定 | 来源：C6-C8 | 阻塞：P1 #待办
+- [ ] TASK-006 [人工确认] 冻结 D9 APOS 命令名、参数、组合优先级、条件及状态回传契约 | 负责人：D9 架构负责人 | 截止：待指定 | 来源：D6 | 阻塞：P0 #待办
+
+## 9. 补充需求：Task 模型、Reset 与异常处理
+
+### 9.1 原子 Task 与 OS 接口
+
+| TaskType | 语义 | OS 调用入口 | 成功终态 | Reset 要求 |
+|---|---|---|---|---|
+| `NAV_GO_POINT` | 前往点位 | `NavigationManager.startGoalPointNavigation(goal)` | `FINISHED` | 非自然结束时停导航，并确认无运动残留 |
+| `LOCO_DANCE` | 跳舞 | `Locomotion.call(SWITCH, rl_dance)` | `FINISHED` | 强制站立 |
+| `LOCO_UNDOCK` | 出箱 | `Locomotion.call(CMD_UNDOCK_PILE)` | `FINISHED` | 确认出箱完成、站立 |
+| `LOCO_DOCK` | 入箱 | `Locomotion.call(CMD_DOCK_PILE)` | `FINISHED` | 确认入箱完成，再进入阻尼 |
+| `LOCO_STAND_UP` | 站立 | `Locomotion.call(CMD_STAND_UP)` | `FINISHED` | 作为动作/异常恢复姿态 |
+| `LOCO_DAMPING` | 阻尼/等待 | `Locomotion.call(CMD_DAMPING)` | `FINISHED` | 作为安全终态 |
+| `GESTURE` | 手势 | `ManipulateManager.gestureControl(id)` | `FINISHED` | 可用 reset/stand_by 手势收尾 |
+| `TTS_PLAY` | 播放话术 | `SpeechManager.startPlayTTS(text)` | `FINISHED` | Error/Cancel 时停止 TTS |
+| `LED_SET` | 灯效切换 | `LedManager.turnOn/turnOff` | `FINISHED` | 回到待机灯 |
+
+所有原子 Task 需向统一状态通道回传 `RUNNING / FINISHED / PAUSED / ERROR`。`Reset` 不是普通成功回调，而是所有 FINISHED、ERROR、PAUSED/CANCEL 分支都必须经过的资源/姿态收敛关口，确保下一 Task 可安全启动。
+
+### 9.2 指令到组合 Task 映射
+
+| 指令类别 | 组合任务链 |
+|---|---|
+| 请到迎宾位 | `UNDOCK → STAND_UP → NAV(welcome) → TTS(欢迎词)` |
+| 给大家跳个舞吧 | `STAND_UP → DANCE → STAND_UP` |
+| 前往历史区 | `UNDOCK → STAND_UP → NAV(history)` |
+| 请介绍历史 | `TTS(历史介绍) ∥ GESTURE`；TTS 先启动，手势按配置延迟 |
+| 前往获奖区 | `NAV(award)` |
+| 请介绍获奖情况 | `TTS + GESTURE` |
+| 前往具身/工业/配送/清洁区 | `NAV(area)` |
+| 请介绍对应产品 | `TTS + GESTURE` |
+| 可以回去了 | `NAV(home) → DOCK → DAMPING → LED(待机)` |
+
+组合任务由 APOS 下发并按顺序/并行语义编排；不可将 `TTS + GESTURE` 简化为无约束并发，必须配置 TTS 首帧或延迟起手势的同步点。**APOS 中命令数组的排列顺序不等价于串行执行**：每个后继原子命令必须具备唯一 `cmdId`，并以其前驱 `cmdId` 的 `FINISH` 作为 `condition`；无依赖的命令才允许并行启动。
+
+### 9.2.1 P0：APOS 组合任务契约（开发前冻结）
+
+| 契约字段 | 必填性 | 说明 |
+|---|---:|---|
+| `taskId` / `cmdId` | 必填 | 用于关联语音命令、APOS 命令、D9 任务状态与日志 |
+| `command` / `params` | 必填 | D9 APOS Provider 注册的命令名及经校验的参数，例如 `goal`、`text`、`gestureId` |
+| `condition` | 串行命令必填 | 后继命令依赖前驱 `FINISH`；不可用下发顺序替代 |
+| `priority` / `interruptPolicy` | 必填 | 新语音命令暂停旧任务；急停进入安全终态；其他优先级待冻结 |
+| `provider` | 必填 | D9 Provider 负责参数校验、OS 调用、abort/资源释放和状态回传 |
+| `stateMapping` | 必填 | 将 APOS `RUNNING / FINISH / FAIL / CANCEL` 映射到 D9 Task 状态；`PAUSED` 由编排快照表达 |
+| `resetPolicy` | 必填 | 原子后置收敛与根组合任务终态 Reset 的边界；Reset 完成前不得调度下一任务 |
+
+现阶段只有任务类型和 OS 调用设想，尚不能视为已存在的 D9 APOS Provider；`NAV_GO_POINT`、`LOCO_*`、`GESTURE` 等能力需由 D9 侧注册、实现和验证后才能进入联调。
+
+### 9.3 异常矩阵
+
+| 场景 | 需求处理 | 需要补充的可观察结果 |
+|---|---|---|
+| 唤醒失败 | 持续录音、继续等待唤醒 | 唤醒失败计数与音频源状态 |
+| 指令无法识别 | TTS 再说一次后退出会话 | 重试次数、退出原因、待机灯恢复 |
+| 任意 Task ERROR | 停止当前 OS Action，阻尼并上报 ERROR | TaskId、命令、失败码、Reset 结果 |
+| Task PAUSED / 急停 | 暂停后站立；急停进入阻尼 | 暂停原因、是否保留恢复快照 |
+| 导航/跳舞失败 | 站立后上报 ERROR | 运动停止已确认 |
+| 入箱失败 | 阻尼后上报 ERROR | 入箱状态和安全姿态 |
+| USB 断开 | 上报 `MIC_ERROR`，尝试切换麦或继续等待唤醒 | 当前音频源、切换结果 |
+| 链式 Task 中唤醒 | 非指令直接回答；指令记录未完成 Task 并按中断策略执行 | 原 Task 快照、恢复决策 |
+| 按下急停 | 取消全部 Task、站立/阻尼至安全终态 | 清空结果与 APOS 状态回传 |
+| 拓扑/定位失败 | 需求要求重试两次后 ERROR | 每次重试及最终错误原因 |
+
+### 9.4 新增验收场景
+
+```gherkin
+# language: zh-CN
+Feature: D9 组合任务的安全复位
+  @AC-004 @P0 @F4
+  Scenario Outline: 原子任务结束后进行匹配的复位
+    Given 机器人正在执行<原子任务>
+    When 该任务以<终态>结束
+    Then 系统执行<复位动作>
+    And 后续任务只能在安全状态确认后启动
+
+    Examples:
+      | 原子任务 | 终态 | 复位动作 |
+      | NAV_GO_POINT | ERROR | 停止导航、站立、阻尼并上报错误 |
+      | LOCO_DANCE | FINISHED | 强制站立 |
+      | TTS_PLAY | ERROR | 停止播放并结束当前会话 |
+      | LOCO_DOCK | FINISHED | 确认入箱后进入阻尼 |
+```
+```mermaid
+graph TD
+    A[机器人执行原子任务] --> B{任务终态}
+    B -->|完成| C[执行该任务规定的复位]
+    B -->|失败或暂停| D[停止动作并进入安全姿态]
+    C --> E[确认安全状态]
+    D --> E
+    E --> F[允许下一任务或上报错误]
+```
+
+```gherkin
+# language: zh-CN
+Feature: D9 外接麦异常恢复
+  @AC-005 @P0 @F1
+  Scenario: USB 麦克风在语音会话期间断开
+    Given 机器人正使用USB或无线麦进行语音交互
+    When 系统检测到音频设备断开
+    Then 系统上报MIC_ERROR
+    And 系统尝试切换到可用麦克风或回到等待唤醒状态
+    And 不向语音SDK继续发送无效音频数据
+```
+```mermaid
+graph TD
+    A[外接麦语音交互中] --> B[检测到设备断开]
+    B --> C[上报MIC_ERROR]
+    C --> D{是否存在可用音频源}
+    D -->|是| E[切换音频源并继续等待唤醒]
+    D -->|否| F[停止无效喂音频并保持等待状态]
+```
+
+## 10. 模块改造技术方案（仅方案，未实施）
+
+### 10.1 方案选择与模块边界
+
+已确认 D9 实际业务工程只有 call。推荐采用“**interaction 负责通用语音能力，call:libcall 负责 D9 展厅编排和 APOS Provider，ap_os 继续作为命令总线**”的方式。这样语音、多语言、NLP 和 PCM 接入能沉淀到 interaction；D9 点位、话术、手势、运动安全和中断恢复不污染通用 SDK。
+
+| 方案 | 说明 | 结论 |
+|---|---|---|
+| A：call:libcall 编排 + interaction 扩展 + APOS Provider | interaction 提供无屏语音与外部音频能力；call 内新增展厅域编排；命令统一经 APOS | **采用**：边界与 D9 实际工程一致 |
+| B：把 D9 Task 编排写入 interaction | SDK 直接理解 D9 点位、导航、阻尼和手势 | 不采用：会把单机型场景写进通用 SDK |
+| C：在 robotopensdk Demo 上直接扩展 | 复用 `MicTestActivity` 的 PCM 流程并叠加业务命令 | 不采用：Demo 不是 D9 的量产业务入口，也不具备 APOS/安全状态闭环 |
+
+```mermaid
+graph LR
+    A[D9机体麦阵或外接麦] --> B[interaction SDK和logic]
+    B --> C[call 展厅语音协调器]
+    B --> D[APOS命令总线]
+    D --> E[call APOS Provider]
+    E --> F[call 展厅任务编排]
+    F --> G[D9 OS能力适配器]
+    G --> H[导航 运动 手势 TTS 灯效]
+    H --> F
+    F --> D
+```
+
+### 10.2 模块级影响与功能落点
+
+| 模块 | 本期定位 | 承接功能 | 主要改造点 | 结论 |
+|---|---|---|---|---|
+| `call:libcall` | **主交付模块** | 展厅模式开关、无屏语音生命周期、APOS Provider、组合任务、复位/恢复、D9 状态上报 | 新增 `exhibition` 领域包；扩展现有初始化、常驻服务和 Manifest Provider | 必改 |
+| `call:app` | 非业务落点 | 当前 `settings.gradle.kts` 未 include `:app`，不能承接 D9 实际功能 | 保持不改；实际代码均落在 `:libcall` | 不改 |
+| `interaction:interaction-sdk` | 对 call 的语音 API | 无屏 `STATE_ONLY` 接入、外部 PCM 输入配置、会话规则与事件订阅 | 对外暴露音频源和会话策略，不让 call 触碰 logic 内部 | 必改 |
+| `interaction:interaction-logic` | 通用语音内核 | Speech SDK PCM 喂音频、唤醒/ASR/TTS 事件、5 秒/3 失败/15 秒策略、NLP → APOS 下发 | 扩展 `SpeechRepository`、会话状态机和 Engine | 必改 |
+| `ap_os:eventbus` / `ap_os:feature` | 既有 APOS 运行时 | 命令注册、依赖条件、状态回传的运行环境 | 先做契约兼容验证；除非现有 Provider/回调不满足需要，否则不改 APOS 引擎 | 默认不改源码 |
+| `robotopensdk:app` | 音频接入参考与调试样例 | `MicTestActivity` 的 USB/无线麦 PCM 采集、格式转换和喂音频经验 | 仅用于提炼/验证 `AudioInputSource`，不承接量产业务 | 默认不改 |
+| D9 OS / 嵌入式 SDK（外部依赖） | 机器人能力提供方 | 导航、出入箱、站立/阻尼、手势、TTS、灯效、急停状态 | 提供稳定调用、取消、终态和错误码契约 | 依赖方确认 |
+
+### 10.3 `call:libcall` 的建议代码落点
+
+主模块为 `D:\Pudu\Code\Pone\D9\call\libcall`。建议新增 `com.pudutech.call.exhibition`，作为与远程呼叫/配送任务平行的 D9 场景域；不要把展示任务写进现有 `CallTaskUseCase`，后者承担远程呼叫和配送语义。
+
+| 建议包/现有锚点 | 承接职责 | 对应需求 |
+|---|---|---|
+| 新增 `exhibition/config` | `ExhibitionVoiceConfig`、点位/话术/手势/灯效/意图映射配置；多语言资源键而非写死中文 | 全部语音命令、多语言 |
+| 新增 `exhibition/voice` | `ExhibitionVoiceCoordinator` 订阅 interaction 事件，驱动灯效、唤醒应答、语音恢复确认和无屏会话生命周期 | 唤醒、问答、5 秒/3 失败/15 秒、无 UI |
+| 新增 `exhibition/audio` | `AudioInputSource` 的 D9 实现，统一机体麦阵与 USB/无线麦状态，断连时上报 `MIC_ERROR` | 外接麦、热插拔、降级 |
+| 新增 `exhibition/apos` | 展厅 APOS 参数解析、`cmdId` 关联、状态上报和取消请求处理 | NLP 指令、APOS 状态闭环 |
+| 新增 `exhibition/task` | `ExhibitionTaskOrchestrator`、组合链生成、快照、恢复询问、`Resetting` 安全门、watchdog | 导航/介绍/跳舞/回停靠点、中断恢复 |
+| 新增 `exhibition/robot` | `RobotCapabilityPort` 及导航、运动、手势、TTS、LED 的 D9 适配实现；将 OS 回调归一为成功/失败/取消 | 九类原子 Task 与异常处理 |
+| 修改 `libcall/build.gradle.kts` | 增加 interaction SDK 与 APOS SDK/AIDL 依赖；call 当前未声明这些依赖 | 接入 interaction 和 APOS |
+| 修改 `CallDetectServiceImpl.kt` | 在 `Init.Finish` 后实例化 `ExhibitionBootstrapper`/协调器，确保 RobotInit 完成后才初始化 Speech/interaction/APOS；复用常驻服务进程，不依赖 Activity | 常驻唤醒、急停、异常退出 |
+| 修改 `CallDetectService.kt` | 承接展厅协调器的启动/停止与前台服务资源释放；不改变已有远程呼叫 AIDL 职责 | 服务生命周期 |
+| 修改 `CallInitApplication.kt` | 增加 APOS 连接初始化和日志代理；不在此处提前初始化依赖 RobotInit 的 interaction | APOS 进程连接 |
+| 修改 `AndroidManifest.xml` | 注册 `CallAposCommandProvider`；按外接麦实现结果补充相应权限/服务声明 | APOS Provider 与音频硬件 |
+| 新增 `exhibition/apos/CallAposCommandProvider`、`CallAposEntryPoint` | 注册展厅原子命令；校验参数；将 `start/finish` 转给展厅编排层；回传 APOS 终态 | APOS 执行、取消、状态回传 |
+| 复用但不作为主落点：`CallTaskUseCase.kt`、`PatrolTaskUseCase.kt` | 可复用现有机器人状态/导航依赖的接入习惯；不混入展厅组合任务状态机 | 避免影响远程呼叫与巡检 |
+| 协调现有 `CallDetectServiceImpl.kt` 的 `TTSManager` | 展厅问答/TTS 由 interaction Speech SDK 管理；需做音频焦点与停止策略，避免与呼叫提示音重叠 | 无屏语音体验 |
+
+### 10.4 interaction 的改造职责
+
+| 模块/现有锚点 | 建议改造 | call 的使用方式 |
+|---|---|---|
+| `interaction-sdk:InteractionConfig`、`InteractionStartOptions`、`InteractionSdk` | 增加公开的音频源、会话策略、无屏启动选项；展厅模式使用 `InteractionMode.STATE_ONLY`，不调用 `attach(Activity)` | call 只构造配置、订阅事件、执行 `start/stop` |
+| `interaction-logic:SpeechRepository` | 将 Speech SDK 录音和外部 PCM 喂入收敛到同一输入抽象；明确 PCM 格式、录音所有权、停止和断连回调 | `exhibition/audio` 只提供标准音频帧与设备状态 |
+| `interaction-logic:VoiceSessionStateMachine` | 把“整次唤醒 15 秒、TTS 后最多监听 5 秒、累计第 3 次 ASR 失败退出”做成可配置会话策略；区分正常问答与失败次数 | call 传入展厅策略，不复制计时状态机 |
+| `interaction-logic:VoiceInteractionEngine`、`VoiceLogicEvent` | 输出唤醒、ASR 失败、会话退出、NLP、TTS 状态等事件；保持 `INTERNAL_APOS` 下发链路 | `ExhibitionVoiceCoordinator` 用事件驱动灯效/恢复确认；APOS 指令仍由 SDK 下发 |
+| `interaction-logic:AposCommandMapper`、`AposCommandExecutor` | 仅负责 NLP intent/`pd_skill_apos` 到 APOS 命令的映射及下发，不接入 D9 OS 细节 | 展厅命令的真正执行在 call APOS Provider |
+
+### 10.5 APOS 与 D9 任务的落点
+
+1. interaction 识别到展厅意图后，按 `INTERNAL_APOS` 下发命令；不让 `call:libcall` 绕过 APOS 直调 OS。
+2. 新增 `CallAposCommandProvider` 作为展厅命令的唯一 Provider，负责参数合法性、启动、取消入口与错误回传。
+3. `ExhibitionTaskOrchestrator` 保存 `taskId ↔ APOS cmdId ↔ D9 OS 调用` 映射。APOS 的 `RUNNING / FINISH / FAIL / CANCEL` 不等同于产品的 `PAUSED`；暂停由编排层保存快照、取消正在执行的 APOS 链路，并在语音确认后重建未完成原子 Task。
+4. 串行链路如 `UNDOCK → STAND_UP → NAV` 必须给后继 APOS 命令配置前驱 `FINISH` 条件；`TTS + GESTURE` 只在明确 TTS 首帧/延迟条件后并行。不能以命令数组顺序代替依赖。
+5. `Resetting` 是根组合任务的安全关口：OS 动作停止、姿态/灯效收敛并回传 APOS 结果后，才能恢复旧任务或调度下一任务。
+
+### 10.6 分阶段任务拆分
+
+| 阶段 | 主要模块 | 产出/功能闭环 | 前置依赖 |
+|---|---|---|---|
+| T0：契约冻结 | call:libcall、interaction、D9 SDK、APOS | 展厅意图、APOS 命令名/参数/`cmdId`/condition、D9 OS 终态与错误码、点位与多语言内容配置表 | TASK-002/003/004/006 |
+| T1：语音输入与无屏会话 | interaction-sdk、interaction-logic、call `exhibition/audio`/`voice` | 机体麦阵与外接麦统一输入；无屏唤醒、灯效、15 秒/5 秒/3 失败会话规则 | 音频格式与设备所有权 |
+| T2：展厅命令接入 | interaction 配置、call `exhibition/config`/`apos` | NLP 意图映射为 APOS 命令；Provider 参数校验及 D9 命令状态回传 | APOS 契约 |
+| T3：原子能力适配 | call `exhibition/robot` | 导航、出入箱、站立、阻尼、跳舞、手势、TTS、LED 的统一异步端口 | D9 OS 接口与错误码 |
+| T4：组合任务与恢复 | call `exhibition/task` | 九类命令组合链、任务状态、暂停快照、语音确认恢复、Reset/watchdog | T2、T3；恢复粒度确认 |
+| T5：安全和异常闭环 | call `exhibition/task`/`voice`、现有 `CallDetectService` | 急停、任务失败、USB 断连、定位重试、不可用音频源、状态上报 | 状态管理接口 |
+| T6：验证与联调 | interaction / call 测试、APOS 联调、真机 | Fake 音频 + Fake OS 单测；APOS 条件链集成；麦阵/USB 真机和急停回归 | 可用样机与 APOS 环境 |
+
+### 10.7 明确不纳入本期的代码落点
+
+- 不在 `robotopensdk/app/.../MicTestActivity.kt` 叠加展厅业务、点位或 APOS 编排；它只保留为外接 PCM 采集验证参考。
+- 不在 `ap_os` 的通用调度器中编码 D9 点位、欢迎词、手势或停靠业务；这些属于 call 的 D9 场景配置和 Provider。
+- 不以 `CallSettingActivity`、`CallMoveActivity` 等现有有屏页面作为无屏机器人确认入口；恢复确认由语音会话完成。
+- 不把中文点位名、介绍话术和命令链写死在 interaction；它们应由 call 的展厅配置与资源承接。
+
+## 11. 下一步
+
+先冻结上述 DoR，再用 `test-spec` 将 AC-001 至 AC-003 转为测试规格；随后以 Fake 音频源和 Fake D9 任务端口先完成状态机自测，再接真机音频与机器人能力。

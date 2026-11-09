@@ -2,7 +2,7 @@ from langchain_community.chat_models.tongyi import ChatTongyi
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 # 构造通义千问模型
-tongyi_model = ChatTongyi(model="qwen3-max")
+tongyi_model = ChatTongyi(model="qwen-plus")
 
 messages = [
     SystemMessage(content="你是一位诗人"),
